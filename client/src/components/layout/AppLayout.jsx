@@ -88,7 +88,7 @@ export default function AppLayout() {
           <aside className="fixed inset-y-0 left-0 w-60 bg-white z-50 flex flex-col shadow-2xl">
             {/* Brand + close */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-              <span className="text-lg font-bold text-primary-600 tracking-tight">Spendi</span>
+              <span className="text-lg font-bold text-primary-600 tracking-tight">Jubi</span>
               <button
                 onClick={() => setOpen(false)}
                 aria-label="סגור תפריט"

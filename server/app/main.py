@@ -26,9 +26,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Spendi API",
+    title="Jubi API",
     version="0.1.0",
-    description="Spendi — personal expense tracker, FastAPI backend",
+    description="Jubi — personal expense tracker, FastAPI backend",
     lifespan=lifespan,
 )
 

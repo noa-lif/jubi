@@ -1,4 +1,4 @@
-# 💰 Spendi — MVP Scaffold
+# 💰 Jubi — MVP Scaffold
 
 A personal monthly expense tracker built with **FastAPI + React (Vite + Tailwind CSS)**.
 

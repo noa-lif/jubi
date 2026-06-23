@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: spendi-api
+    name: jubi-api
     runtime: python
     rootDir: server
     buildCommand: pip install -r requirements.txt

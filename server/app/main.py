@@ -38,7 +38,7 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://jubiapp.vercel.app"],
+    allow_origins=["http://localhost:5173", "https://jubiapp.vercel.app", "https://jubijubi.com", "https://www.jubijubi.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

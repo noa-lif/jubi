@@ -149,7 +149,7 @@ export default function DashboardPage() {
       {/* ── Header ─────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-primary-600">Jubi</h1>
+          <h1 className="text-2xl font-bold text-primary-600">JubiJubi</h1>
           <p className="text-sm text-gray-500 mt-0.5">מעקב הוצאות חודשי</p>
         </div>
         <div className="flex items-center gap-2">

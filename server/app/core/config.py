@@ -11,8 +11,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./expense_tracker.db"
     SECRET_KEY: str = "change-me-in-production-use-a-long-random-string"
     ALGORITHM: str = "HS256"
-    # Default: 7 days (suitable for a personal single-user app)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
+    RESEND_API_KEY: str = ""
+    FRONTEND_URL: str = "https://jubijubi.com"
 
 
 # Module-level singleton — import this everywhere

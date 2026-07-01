@@ -3,6 +3,7 @@
  * On success, calls onSuccess(token) so the parent page can call login().
  */
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { authApi } from '../../api/auth'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
@@ -59,6 +60,12 @@ export default function LoginForm({ onSuccess }) {
       <Button type="submit" loading={loading} className="w-full">
         כניסה
       </Button>
+
+      <p className="text-center text-sm text-gray-500">
+        <Link to="/forgot-password" className="text-primary-600 hover:underline">
+          שכחתי סיסמה
+        </Link>
+      </p>
     </form>
   )
 }

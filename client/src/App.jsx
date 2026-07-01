@@ -11,6 +11,8 @@ import { useAuth } from './hooks/useAuth'
 import AuthPage from './pages/AuthPage'
 import CategoriesPage from './pages/CategoriesPage'
 import DashboardPage from './pages/DashboardPage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 import AppLayout from './components/layout/AppLayout'
 
 /** Wraps routes that require a valid JWT. */
@@ -34,6 +36,8 @@ export default function App() {
     <Routes>
       {/* Public */}
       <Route path="/auth" element={<AuthPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
 
       {/* Protected — all wrapped inside the shared AppLayout sidebar/navbar */}
       <Route

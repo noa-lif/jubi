@@ -1,0 +1,48 @@
+{
+  "name": "jubi",
+  "version": "1.0.0",
+  "description": "A personal monthly expense tracker built with Next.js (App Router) + TypeScript, Prisma, and Supabase Postgres.",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "postinstall": "prisma generate"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noa-lif/jubi.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/noa-lif/jubi/issues"
+  },
+  "homepage": "https://github.com/noa-lif/jubi#readme",
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "bcryptjs": "^3.0.3",
+    "exceljs": "^4.4.0",
+    "jose": "^6.2.10",
+    "next": "^16.3.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.2",
+    "postcss": "^8.5.26",
+    "prisma": "^6.19.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3"
+  }
+}

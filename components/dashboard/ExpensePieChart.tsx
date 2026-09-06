@@ -1,8 +1,17 @@
 'use client'
 
+/**
+ * Monthly expense breakdown by category.
+ *
+ * The slices come from the server's /transactions/summary aggregate rather
+ * than being summed from the transactions array: the table is paginated, so
+ * the client only ever holds one page and summing it locally would chart a
+ * fraction of the month. Aggregating in Postgres also means a month with
+ * thousands of transactions still transfers only a handful of rows.
+ */
 import { useMemo } from 'react'
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
-import type { TransactionResponse } from '@/types/api'
+import type { CategoryBreakdown } from '@/types/api'
 
 const COLORS = [
   '#6366f1', '#f59e0b', '#10b981', '#ef4444',
@@ -19,22 +28,6 @@ const ILS = new Intl.NumberFormat('en-US', {
 interface Slice {
   name: string
   value: number
-}
-
-function buildSlices(transactions: TransactionResponse[]): Slice[] {
-  const totals: Record<string, number> = {}
-  for (const t of transactions) {
-    if (t.amount < 0) continue // income handled separately
-    const key = t.category_name ?? 'שונות'
-    totals[key] = (totals[key] ?? 0) + t.amount
-  }
-  return Object.entries(totals)
-    .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
-    .sort((a, b) => b.value - a.value)
-}
-
-function calcIncomeTotal(transactions: TransactionResponse[]): number {
-  return transactions.filter((t) => t.amount < 0).reduce((sum, t) => sum + Math.abs(t.amount), 0)
 }
 
 function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: Slice }> }) {
@@ -59,13 +52,26 @@ const TOOLTIP_KEYFRAME = `
 `
 
 interface ExpensePieChartProps {
-  transactions?: TransactionResponse[]
+  byCategory?: CategoryBreakdown[]
+  incomeTotal?: number
   loading?: boolean
 }
 
-export default function ExpensePieChart({ transactions = [], loading = false }: ExpensePieChartProps) {
-  const slices = useMemo(() => buildSlices(transactions), [transactions])
-  const incomeTotal = useMemo(() => calcIncomeTotal(transactions), [transactions])
+export default function ExpensePieChart({
+  byCategory = [],
+  incomeTotal = 0,
+  loading = false,
+}: ExpensePieChartProps) {
+  // The server already filters to expenses, rounds, and sorts by total
+  // descending; this only maps to the shape recharts wants and drops any
+  // zero/negative slice, which a pie cannot render meaningfully.
+  const slices = useMemo<Slice[]>(
+    () =>
+      byCategory
+        .filter((c) => c.total > 0)
+        .map((c) => ({ name: c.category_name ?? 'שונות', value: c.total })),
+    [byCategory],
+  )
 
   return (
     <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">

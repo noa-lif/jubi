@@ -1,40 +1,79 @@
 'use client'
 
+/**
+ * Create/edit dialog for a single transaction.
+ *
+ * One component serves both operations because the fields, the validation and
+ * the debit/credit handling are identical — only the title, the initial values
+ * and the callback differ. Passing `transaction` switches it to edit mode.
+ */
 import { useEffect, useRef, useState } from 'react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import { ApiClientError } from '@/api-client/client'
 import type { CreateTransactionInput } from '@/api-client/transactions'
-import type { CategoryResponse } from '@/types/api'
+import type { CategoryResponse, TransactionResponse } from '@/types/api'
+import { MAX_AMOUNT, MAX_BUSINESS_NAME } from '@/lib/validation'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-interface AddTransactionModalProps {
-  categories: CategoryResponse[]
-  onClose: () => void
-  onAdd: (data: CreateTransactionInput) => Promise<void>
+/**
+ * The UI models sign as a debit/credit toggle rather than a minus sign, so an
+ * amount is always entered as a positive number and re-signed on submit.
+ * Income is stored negative.
+ */
+function toFormState(txn: TransactionResponse | null, categories: CategoryResponse[]) {
+  if (!txn) {
+    const shonot = categories.find((c) => c.name === 'שונות')
+    return {
+      business_name: '',
+      amount: '',
+      type: 'debit' as 'debit' | 'credit',
+      date: today(),
+      category_id: shonot ? String(shonot.id) : '',
+    }
+  }
+  return {
+    business_name: txn.business_name,
+    amount: String(Math.abs(txn.amount)),
+    type: (txn.amount < 0 ? 'credit' : 'debit') as 'debit' | 'credit',
+    date: txn.date,
+    category_id: txn.category_id === null ? '' : String(txn.category_id),
+  }
 }
 
-export default function AddTransactionModal({ categories, onClose, onAdd }: AddTransactionModalProps) {
-  const [form, setForm] = useState({
-    business_name: '',
-    amount: '',
-    type: 'debit' as 'debit' | 'credit',
-    date: today(),
-    category_id: '',
-  })
+interface TransactionModalProps {
+  categories: CategoryResponse[]
+  /** Omit or pass null to create; pass a transaction to edit it. */
+  transaction?: TransactionResponse | null
+  onClose: () => void
+  onSave: (data: CreateTransactionInput, id?: number) => Promise<void>
+}
+
+export default function TransactionModal({
+  categories,
+  transaction = null,
+  onClose,
+  onSave,
+}: TransactionModalProps) {
+  const isEdit = transaction !== null
+  const [form, setForm] = useState(() => toFormState(transaction, categories))
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const firstInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     firstInputRef.current?.focus()
-    // Set default category to שונות
+  }, [])
+
+  // Categories arrive asynchronously; when creating, adopt שונות as the
+  // default as soon as they land (but never clobber an in-progress edit).
+  useEffect(() => {
+    if (isEdit || form.category_id) return
     const shonot = categories.find((c) => c.name === 'שונות')
     if (shonot) setForm((prev) => ({ ...prev, category_id: String(shonot.id) }))
-  }, [categories])
+  }, [categories, isEdit, form.category_id])
 
-  // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -51,12 +90,24 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const amount = Number.parseFloat(form.amount)
+
+    // Mirrors the server-side rules in lib/validation.ts. Client-side checks
+    // are for fast feedback only — the API re-validates everything, since a
+    // request can be made without going through this form at all.
     if (!form.business_name.trim()) {
       setError('נא להזין שם עסק')
       return
     }
+    if (form.business_name.trim().length > MAX_BUSINESS_NAME) {
+      setError(`שם העסק ארוך מדי (עד ${MAX_BUSINESS_NAME} תווים)`)
+      return
+    }
     if (!form.amount || Number.isNaN(amount) || amount <= 0) {
       setError('נא להזין סכום תקין')
+      return
+    }
+    if (amount > MAX_AMOUNT) {
+      setError('הסכום גדול מדי')
       return
     }
     if (!form.date) {
@@ -66,12 +117,15 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
 
     setLoading(true)
     try {
-      await onAdd({
-        business_name: form.business_name.trim(),
-        amount: form.type === 'credit' ? -amount : amount,
-        date: form.date,
-        category_id: form.category_id ? Number(form.category_id) : null,
-      })
+      await onSave(
+        {
+          business_name: form.business_name.trim(),
+          amount: form.type === 'credit' ? -amount : amount,
+          date: form.date,
+          category_id: form.category_id ? Number(form.category_id) : null,
+        },
+        transaction?.id,
+      )
       onClose()
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : 'אירעה שגיאה. נסה שנית.')
@@ -81,20 +135,24 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ animation: 'modal-bg 150ms ease' }}>
-      {/* Backdrop */}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ animation: 'modal-bg 150ms ease' }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={isEdit ? 'עריכת עסקה' : 'הוספת עסקה ידנית'}
+    >
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
 
-      {/* Card */}
       <div
         className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-5"
         style={{ animation: 'modal-card 180ms cubic-bezier(0.34,1.56,0.64,1)' }}
       >
-        {/* Header */}
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-gray-900">הוספת עסקה ידנית</h2>
+          <h2 className="text-lg font-bold text-gray-900">{isEdit ? 'עריכת עסקה' : 'הוספת עסקה ידנית'}</h2>
           <button
             onClick={onClose}
+            aria-label="סגור"
             className="p-1 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -103,23 +161,28 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Business name */}
+        {/* noValidate hands validation to handleSubmit below. The `required`
+            and `min` attributes stay for semantics and assistive tech, but the
+            browser's own popups would otherwise fire first — and they appear
+            in the browser's locale, not the app's Hebrew. */}
+        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <Input
             ref={firstInputRef}
             label="שם עסק / תיאור"
             placeholder="לדוגמה: סופרמרקט שופרסל"
             value={form.business_name}
             onChange={set('business_name')}
+            maxLength={MAX_BUSINESS_NAME}
             required
           />
 
-          {/* Amount + debit/credit */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">סכום</label>
+            <label htmlFor="txn-amount" className="text-sm font-medium text-gray-700">
+              סכום
+            </label>
             <div className="flex gap-2">
-              {/* Amount input */}
               <input
+                id="txn-amount"
                 type="number"
                 min="0.01"
                 step="0.01"
@@ -129,7 +192,6 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
                 className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                 required
               />
-              {/* Debit / Credit toggle */}
               <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm font-medium">
                 <button
                   type="button"
@@ -153,10 +215,12 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
             </div>
           </div>
 
-          {/* Date */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">תאריך</label>
+            <label htmlFor="txn-date" className="text-sm font-medium text-gray-700">
+              תאריך
+            </label>
             <input
+              id="txn-date"
               type="date"
               value={form.date}
               onChange={set('date')}
@@ -165,9 +229,11 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
             />
           </div>
 
-          {/* Category — locked to הכנסות for credit transactions */}
+          {/* Category — pinned to הכנסות for credits, matching the server rule */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">קטגוריה</label>
+            <label htmlFor="txn-category" className="text-sm font-medium text-gray-700">
+              קטגוריה
+            </label>
             {form.type === 'credit' ? (
               <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
                 <svg className="w-4 h-4 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -182,6 +248,7 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
               </div>
             ) : (
               <select
+                id="txn-category"
                 value={form.category_id}
                 onChange={set('category_id')}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
@@ -195,14 +262,18 @@ export default function AddTransactionModal({ categories, onClose, onAdd }: AddT
             )}
           </div>
 
-          {error && <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+          {error && (
+            <p role="alert" className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">
+              {error}
+            </p>
+          )}
 
           <div className="flex gap-3 pt-1">
             <Button type="button" variant="secondary" className="flex-1" onClick={onClose}>
               ביטול
             </Button>
             <Button type="submit" loading={loading} className="flex-1">
-              הוסף עסקה
+              {isEdit ? 'שמור שינויים' : 'הוסף עסקה'}
             </Button>
           </div>
         </form>

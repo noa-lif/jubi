@@ -8,6 +8,10 @@ export const categoriesApi = {
   /** Create a new user-owned custom category */
   create: (name: string) => apiClient.post<CategoryResponse>('/categories', { name }),
 
+  /** Rename a user-owned category. Protected categories are rejected server-side. */
+  rename: (categoryId: number, name: string) =>
+    apiClient.patch<CategoryResponse>(`/categories/${categoryId}`, { name }),
+
   /** Delete a user-owned category */
   remove: (categoryId: number) => apiClient.delete<void>(`/categories/${categoryId}`),
 }

@@ -40,19 +40,41 @@ function TrashIcon() {
   )
 }
 
+function PencilIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+      />
+    </svg>
+  )
+}
+
+const byName = (a: CategoryResponse, b: CategoryResponse) => a.name.localeCompare(b.name, 'he')
+
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<CategoryResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [newName, setNewName] = useState('')
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState('')
+  const [listError, setListError] = useState('')
+
+  // id of the category being renamed, plus its in-progress value
+  const [editing, setEditing] = useState<{ id: number; name: string } | null>(null)
+  const [savingEdit, setSavingEdit] = useState(false)
 
   useEffect(() => {
     setLoading(true)
     categoriesApi
       .list()
       .then(setCategories)
-      .catch(console.error)
+      .catch((err) =>
+        setListError(err instanceof ApiClientError ? err.message : 'טעינת הקטגוריות נכשלה'),
+      )
       .finally(() => setLoading(false))
   }, [])
 
@@ -71,21 +93,52 @@ export default function CategoriesPage() {
     setAdding(true)
     try {
       const created = await categoriesApi.create(name)
-      setCategories((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name, 'he')))
+      setCategories((prev) => [...prev, created].sort(byName))
       setNewName('')
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : 'Failed to add category')
+      setError(err instanceof ApiClientError ? err.message : 'הוספת הקטגוריה נכשלה')
     } finally {
       setAdding(false)
     }
   }
 
+  const handleRename = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editing) return
+    const name = editing.name.trim()
+    const original = categories.find((c) => c.id === editing.id)
+
+    // No-op rename: close without a pointless round trip.
+    if (!name || name === original?.name) {
+      setEditing(null)
+      return
+    }
+
+    setListError('')
+    setSavingEdit(true)
+    try {
+      const updated = await categoriesApi.rename(editing.id, name)
+      setCategories((prev) => prev.map((c) => (c.id === updated.id ? updated : c)).sort(byName))
+      setEditing(null)
+    } catch (err) {
+      setListError(err instanceof ApiClientError ? err.message : 'שינוי השם נכשל')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   const handleDelete = async (id: number) => {
+    const category = categories.find((c) => c.id === id)
+    // Deleting reassigns the category's transactions to שונות, which is not
+    // something to do on a stray click.
+    if (!window.confirm(`למחוק את הקטגוריה "${category?.name}"? העסקאות שלה יועברו לשונות.`)) return
+
+    setListError('')
     try {
       await categoriesApi.remove(id)
       setCategories((prev) => prev.filter((c) => c.id !== id))
     } catch (err) {
-      alert(err instanceof ApiClientError ? err.message : 'Delete failed')
+      setListError(err instanceof ApiClientError ? err.message : 'המחיקה נכשלה')
     }
   }
 
@@ -130,6 +183,12 @@ export default function CategoriesPage() {
           </h2>
         </div>
 
+        {listError && (
+          <p role="alert" className="mx-5 mt-4 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
+            {listError}
+          </p>
+        )}
+
         {loading ? (
           <div className="p-6 space-y-3">
             {[...Array(4)].map((_, i) => (
@@ -139,26 +198,63 @@ export default function CategoriesPage() {
         ) : (
           <ul className="divide-y divide-gray-50">
             {sorted.map((cat) => (
-              <li key={cat.id} className="flex items-center justify-between px-5 py-3">
-                <div className="flex items-center gap-2">
-                  {cat.is_system ? (
-                    <LockIcon />
-                  ) : (
-                    <span className="inline-block w-2 h-2 bg-primary-500 rounded-full flex-shrink-0" />
-                  )}
-                  <span className="text-sm font-medium text-gray-800">{cat.name}</span>
-                  {cat.is_system && (
-                    <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">ברירת מחדל</span>
-                  )}
-                </div>
-                {!cat.is_system && (
-                  <button
-                    onClick={() => handleDelete(cat.id)}
-                    aria-label={`Delete ${cat.name}`}
-                    className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                  >
-                    <TrashIcon />
-                  </button>
+              <li key={cat.id} className="flex items-center justify-between px-5 py-3 gap-3">
+                {editing?.id === cat.id ? (
+                  // Inline rename — submitting on Enter, cancelling on Escape.
+                  <form onSubmit={handleRename} className="flex items-center gap-2 flex-1">
+                    <input
+                      autoFocus
+                      value={editing.name}
+                      onChange={(e) => setEditing({ id: cat.id, name: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setEditing(null)
+                      }}
+                      aria-label={`שם חדש עבור ${cat.name}`}
+                      className="flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <Button type="submit" size="sm" loading={savingEdit}>
+                      שמור
+                    </Button>
+                    <Button type="button" size="sm" variant="secondary" onClick={() => setEditing(null)}>
+                      ביטול
+                    </Button>
+                  </form>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {cat.is_system ? (
+                        <LockIcon />
+                      ) : (
+                        <span className="inline-block w-2 h-2 bg-primary-500 rounded-full flex-shrink-0" />
+                      )}
+                      <span className="text-sm font-medium text-gray-800 truncate">{cat.name}</span>
+                      {cat.is_system && (
+                        <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                          ברירת מחדל
+                        </span>
+                      )}
+                    </div>
+                    {/* Protected categories are load-bearing for the income and
+                        fallback rules, so they can be neither renamed nor deleted. */}
+                    {!cat.is_system && (
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => setEditing({ id: cat.id, name: cat.name })}
+                          aria-label={`שנה שם ${cat.name}`}
+                          className="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                        >
+                          <PencilIcon />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(cat.id)}
+                          aria-label={`מחק ${cat.name}`}
+                          className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
               </li>
             ))}

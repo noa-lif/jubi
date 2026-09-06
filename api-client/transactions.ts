@@ -1,5 +1,9 @@
 import { apiClient } from './client'
-import type { MonthlySummaryResponse, TransactionResponse } from '@/types/api'
+import type {
+  MonthlySummaryResponse,
+  PaginatedResponse,
+  TransactionResponse,
+} from '@/types/api'
 
 export interface CreateTransactionInput {
   date: string
@@ -8,30 +12,57 @@ export interface CreateTransactionInput {
   category_id: number | null
 }
 
-export const transactionsApi = {
-  /** Fetch all transactions for the given month/year */
-  list: (year: number, month: number) =>
-    apiClient.get<TransactionResponse[]>('/transactions', { year, month }),
+/** Every field optional — the PATCH endpoint applies only the keys present. */
+export type UpdateTransactionInput = Partial<CreateTransactionInput>
 
-  /** Monthly aggregate (total spend + count) */
+export interface ListTransactionsParams {
+  year: number
+  month: number
+  limit?: number
+  offset?: number
+}
+
+export const transactionsApi = {
+  /**
+   * Fetch one page of transactions for the given month. The server caps
+   * `limit`, so this can never pull an unbounded number of rows.
+   */
+  list: ({ year, month, limit, offset }: ListTransactionsParams) =>
+    apiClient.get<PaginatedResponse<TransactionResponse>>('/transactions', {
+      year,
+      month,
+      limit,
+      offset,
+    }),
+
+  /** Monthly totals plus the per-category breakdown used by the pie chart. */
   summary: (year: number, month: number) =>
     apiClient.get<MonthlySummaryResponse>('/transactions/summary', { year, month }),
 
-  /** Create a new expense transaction */
-  create: (data: CreateTransactionInput) => apiClient.post<TransactionResponse>('/transactions', data),
+  /** Fetch a single transaction by id. */
+  get: (transactionId: number) =>
+    apiClient.get<TransactionResponse>(`/transactions/${transactionId}`),
+
+  create: (data: CreateTransactionInput) =>
+    apiClient.post<TransactionResponse>('/transactions', data),
+
+  /** Full partial-update: date, amount, business_name and/or category. */
+  update: (transactionId: number, data: UpdateTransactionInput) =>
+    apiClient.patch<TransactionResponse>(`/transactions/${transactionId}`, data),
 
   /**
-   * Inline category update — called from the TransactionsTable dropdown.
-   * categoryId may be null to remove the category.
+   * Inline category-only update — called from the TransactionsTable dropdown.
+   * Kept separate from `update` because the table's dropdown is a
+   * single-purpose control and this endpoint additionally refuses to
+   * recategorize income.
    */
   updateCategory: (transactionId: number, categoryId: number | null) =>
     apiClient.patch<TransactionResponse>(`/transactions/${transactionId}/category`, {
       category_id: categoryId,
     }),
 
-  /** Delete a transaction */
   remove: (transactionId: number) => apiClient.delete<void>(`/transactions/${transactionId}`),
 
-  /** Batch-delete transactions by ID (used for undo after upload) */
+  /** Batch-delete by ID (used to undo an upload). */
   batchDelete: (ids: number[]) => apiClient.post<void>('/transactions/batch-delete', { ids }),
 }

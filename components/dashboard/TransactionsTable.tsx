@@ -30,11 +30,35 @@ function SkeletonRow() {
   )
 }
 
+function PencilIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+      />
+    </svg>
+  )
+}
+
+/** Server-side paging state for the current month, mirroring PaginatedResponse. */
+interface PageState {
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
 interface TransactionsTableProps {
   transactions: TransactionResponse[]
   categories: CategoryResponse[]
   loading: boolean
+  page: PageState
+  onPageChange: (offset: number) => void
   onCategoryChange: (txnId: number, categoryId: number | null) => void
+  onEdit: (txn: TransactionResponse) => void
   onDelete: (txnId: number) => void
 }
 
@@ -42,7 +66,10 @@ export default function TransactionsTable({
   transactions,
   categories,
   loading,
+  page,
+  onPageChange,
   onCategoryChange,
+  onEdit,
   onDelete,
 }: TransactionsTableProps) {
   const expenseCategories = categories.filter((c) => c.name !== 'הכנסות')
@@ -139,22 +166,31 @@ export default function TransactionsTable({
                       )}
                     </td>
 
-                    {/* Delete */}
-                    <td className="px-4 py-3 text-center">
-                      <button
-                        onClick={() => onDelete(txn.id)}
-                        aria-label="מחק עסקה"
-                        className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                          />
-                        </svg>
-                      </button>
+                    {/* Edit + delete */}
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          onClick={() => onEdit(txn)}
+                          aria-label={`ערוך עסקה ${txn.business_name}`}
+                          className="p-1.5 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                        >
+                          <PencilIcon />
+                        </button>
+                        <button
+                          onClick={() => onDelete(txn.id)}
+                          aria-label={`מחק עסקה ${txn.business_name}`}
+                          className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                            />
+                          </svg>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -163,6 +199,32 @@ export default function TransactionsTable({
           </tbody>
         </table>
       </div>
+
+      {/* Pager — hidden when a single page holds the whole month */}
+      {!loading && page.total > 0 && (page.offset > 0 || page.has_more) && (
+        <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 text-sm">
+          <span className="text-gray-500">
+            {/* 1-based, inclusive: "showing 51–100 of 812" */}
+            מציג {page.offset + 1}–{page.offset + transactions.length} מתוך {page.total}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onPageChange(Math.max(0, page.offset - page.limit))}
+              disabled={page.offset === 0}
+              className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              הקודם
+            </button>
+            <button
+              onClick={() => onPageChange(page.offset + page.limit)}
+              disabled={!page.has_more}
+              className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              הבא
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

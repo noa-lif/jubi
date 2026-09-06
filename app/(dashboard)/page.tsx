@@ -2,18 +2,31 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { categoriesApi } from '@/api-client/categories'
+import { ApiClientError } from '@/api-client/client'
 import { transactionsApi, type CreateTransactionInput } from '@/api-client/transactions'
-import AddTransactionModal from '@/components/dashboard/AddTransactionModal'
 import ExpensePieChart from '@/components/dashboard/ExpensePieChart'
 import ExpenseSummaryWidget from '@/components/dashboard/ExpenseSummaryWidget'
 import FileUploadWidget from '@/components/dashboard/FileUploadWidget'
 import MonthNavigator from '@/components/dashboard/MonthNavigator'
+import TransactionModal from '@/components/dashboard/TransactionModal'
 import TransactionsTable from '@/components/dashboard/TransactionsTable'
 import type { CategoryResponse, MonthlySummaryResponse, TransactionResponse, UploadResponse } from '@/types/api'
+
+const PAGE_SIZE = 50
 
 type UndoAction =
   | { type: 'delete'; transaction: TransactionResponse }
   | { type: 'upload'; transactionIds: number[] }
+
+const EMPTY_SUMMARY = (year: number, month: number): MonthlySummaryResponse => ({
+  year,
+  month,
+  total: 0,
+  transaction_count: 0,
+  income_total: 0,
+  expense_total: 0,
+  by_category: [],
+})
 
 /** Reads the persisted { year, month } from localStorage — client-only, called from an effect (see below). */
 function readPersistedYearMonth(): [number, number] {
@@ -34,6 +47,10 @@ function undoLabel(action: UndoAction): string {
   return `נוספו ${action.transactionIds.length} עסקאות`
 }
 
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiClientError ? err.message : fallback
+}
+
 export default function DashboardPage() {
   // localStorage isn't available during the server render, so the real
   // month/year is read on mount (see the effect below) — this just avoids
@@ -49,15 +66,21 @@ export default function DashboardPage() {
     setHydrated(true)
   }, [])
 
-  const [summary, setSummary] = useState<MonthlySummaryResponse>({ year, month, total: 0, transaction_count: 0 })
+  const [summary, setSummary] = useState<MonthlySummaryResponse>(() => EMPTY_SUMMARY(year, month))
   const [transactions, setTransactions] = useState<TransactionResponse[]>([])
   const [categories, setCategories] = useState<CategoryResponse[]>([])
   const [loadingTxns, setLoadingTxns] = useState(true)
   const [loadingSummary, setLoadingSummary] = useState(true)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [error, setError] = useState('')
 
-  // ── Add transaction modal ───────────────────────────────────────────────
-  const [showAddModal, setShowAddModal] = useState(false)
+  // ── Pagination ──────────────────────────────────────────────────────────
+  const [offset, setOffset] = useState(0)
+  const [pageMeta, setPageMeta] = useState({ total: 0, limit: PAGE_SIZE, offset: 0, has_more: false })
+
+  // ── Create / edit modal ─────────────────────────────────────────────────
+  // null = closed. { txn: null } = create. { txn } = edit that transaction.
+  const [modal, setModal] = useState<{ txn: TransactionResponse | null } | null>(null)
 
   // ── Undo stack (max 2 entries) ──────────────────────────────────────────
   const [undoStack, setUndoStack] = useState<UndoAction[]>([])
@@ -68,29 +91,58 @@ export default function DashboardPage() {
 
   // ── Data fetching ───────────────────────────────────────────────────────
   useEffect(() => {
-    categoriesApi.list().then(setCategories).catch(console.error)
+    categoriesApi
+      .list()
+      .then(setCategories)
+      .catch((err) => setError(errorMessage(err, 'טעינת הקטגוריות נכשלה')))
   }, [])
 
   useEffect(() => {
     if (!hydrated) return
+    let cancelled = false
+
     setLoadingTxns(true)
     setLoadingSummary(true)
-    Promise.all([transactionsApi.list(year, month), transactionsApi.summary(year, month)])
-      .then(([txns, sum]) => {
-        setTransactions(txns)
+    Promise.all([
+      transactionsApi.list({ year, month, limit: PAGE_SIZE, offset }),
+      transactionsApi.summary(year, month),
+    ])
+      .then(([page, sum]) => {
+        // A month/page change can resolve out of order; drop stale responses
+        // so a slow earlier request can't overwrite newer data.
+        if (cancelled) return
+        setTransactions(page.items)
+        setPageMeta({
+          total: page.total,
+          limit: page.limit,
+          offset: page.offset,
+          has_more: page.has_more,
+        })
         setSummary(sum)
+        setError('')
       })
-      .catch(console.error)
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err, 'טעינת העסקאות נכשלה'))
+      })
       .finally(() => {
+        if (cancelled) return
         setLoadingTxns(false)
         setLoadingSummary(false)
       })
-  }, [year, month, refreshKey, hydrated])
+
+    return () => {
+      cancelled = true
+    }
+  }, [year, month, offset, refreshKey, hydrated])
+
+  /** Re-fetch the current page and summary after a mutation. */
+  const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
 
   // ── Month navigation ────────────────────────────────────────────────────
   const handleMonthChange = useCallback((y: number, m: number) => {
     setYear(y)
     setMonth(m)
+    setOffset(0) // a new month starts at its first page
     localStorage.setItem('dashboard_month', JSON.stringify({ year: y, month: m }))
   }, [])
 
@@ -106,45 +158,63 @@ export default function DashboardPage() {
 
       if (months.length === 1) {
         handleMonthChange(months[0].year, months[0].month)
+      } else {
+        setOffset(0)
       }
-      setRefreshKey((k) => k + 1)
+      refresh()
     },
-    [handleMonthChange, pushUndo],
+    [handleMonthChange, pushUndo, refresh],
   )
 
-  // ── Category change ─────────────────────────────────────────────────────
+  // ── Inline category change ──────────────────────────────────────────────
   const handleCategoryChange = useCallback(
     async (txnId: number, categoryId: number | null) => {
-      await transactionsApi.updateCategory(txnId, categoryId)
-      setTransactions((prev) =>
-        prev.map((t) =>
-          t.id === txnId
-            ? { ...t, category_id: categoryId, category_name: categories.find((c) => c.id === categoryId)?.name ?? null }
-            : t,
-        ),
-      )
-      transactionsApi.summary(year, month).then(setSummary)
+      try {
+        const updated = await transactionsApi.updateCategory(txnId, categoryId)
+        // Use the server's response rather than guessing locally: it applies
+        // the income/שונות fallback rules and may return a different category
+        // than the one requested.
+        setTransactions((prev) => prev.map((t) => (t.id === txnId ? updated : t)))
+        // The pie chart is a server-side aggregate, so it has to be refetched.
+        const sum = await transactionsApi.summary(year, month)
+        setSummary(sum)
+      } catch (err) {
+        setError(errorMessage(err, 'עדכון הקטגוריה נכשל'))
+        refresh() // resync — local state may no longer match the server
+      }
     },
-    [categories, year, month],
+    [year, month, refresh],
   )
 
   // ── Delete ──────────────────────────────────────────────────────────────
   const handleDelete = useCallback(
     async (txnId: number) => {
       const txn = transactions.find((t) => t.id === txnId)
-      await transactionsApi.remove(txnId)
-      setTransactions((prev) => prev.filter((t) => t.id !== txnId))
-      transactionsApi.summary(year, month).then(setSummary)
-      if (txn) pushUndo({ type: 'delete', transaction: txn })
+      try {
+        await transactionsApi.remove(txnId)
+        if (txn) pushUndo({ type: 'delete', transaction: txn })
+        refresh() // refetch: deleting pulls a row from the next page onto this one
+      } catch (err) {
+        setError(errorMessage(err, 'מחיקת העסקה נכשלה'))
+      }
     },
-    [transactions, year, month, pushUndo],
+    [transactions, pushUndo, refresh],
   )
 
-  // ── Manual add ─────────────────────────────────────────────────────────
-  const handleAddTransaction = useCallback(async (data: CreateTransactionInput) => {
-    await transactionsApi.create(data)
-    setRefreshKey((k) => k + 1)
-  }, [])
+  // ── Create / update ─────────────────────────────────────────────────────
+  const handleSave = useCallback(
+    async (data: CreateTransactionInput, id?: number) => {
+      // Errors propagate to the modal, which renders them inline next to the
+      // fields rather than as a page-level banner.
+      if (id === undefined) {
+        await transactionsApi.create(data)
+      } else {
+        await transactionsApi.update(id, data)
+      }
+      refresh()
+    },
+    [refresh],
+  )
 
   // ── Undo ────────────────────────────────────────────────────────────────
   const handleUndo = useCallback(
@@ -162,15 +232,15 @@ export default function DashboardPage() {
             business_name: t.business_name,
             category_id: t.category_id,
           })
-        } else if (action.type === 'upload') {
+        } else {
           await transactionsApi.batchDelete(action.transactionIds)
         }
-        setRefreshKey((k) => k + 1)
-      } catch (e) {
-        console.error('Undo failed', e)
+        refresh()
+      } catch (err) {
+        setError(errorMessage(err, 'הפעולה נכשלה'))
       }
     },
-    [undoStack],
+    [undoStack, refresh],
   )
 
   return (
@@ -183,9 +253,8 @@ export default function DashboardPage() {
         </div>
         <div className="flex items-center gap-2">
           <MonthNavigator year={year} month={month} onChange={handleMonthChange} />
-          {/* Add transaction manually */}
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => setModal({ txn: null })}
             title="הוסף עסקה ידנית"
             aria-label="הוסף עסקה ידנית"
             className="p-2 rounded-lg border border-gray-200 text-gray-500 hover:border-primary-400 hover:text-primary-600 hover:bg-primary-50 transition-colors"
@@ -198,11 +267,28 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* ── Page-level error ───────────────────────────────── */}
+      {error && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-4 bg-red-50 border border-red-100 text-red-700 rounded-xl px-4 py-3 text-sm"
+        >
+          <span>{error}</span>
+          <button onClick={() => setError('')} aria-label="סגור התראה" className="text-red-400 hover:text-red-700">
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* ── Summary ────────────────────────────────────────── */}
       <ExpenseSummaryWidget total={summary.total} transactionCount={summary.transaction_count} loading={loadingSummary} />
 
       {/* ── Pie chart ──────────────────────────────────────── */}
-      <ExpensePieChart transactions={transactions} loading={loadingTxns} />
+      <ExpensePieChart
+        byCategory={summary.by_category}
+        incomeTotal={summary.income_total}
+        loading={loadingSummary}
+      />
 
       {/* ── Transactions table ─────────────────────────────── */}
       <div>
@@ -211,17 +297,21 @@ export default function DashboardPage() {
           transactions={transactions}
           categories={categories}
           loading={loadingTxns}
+          page={pageMeta}
+          onPageChange={setOffset}
           onCategoryChange={handleCategoryChange}
+          onEdit={(txn) => setModal({ txn })}
           onDelete={handleDelete}
         />
       </div>
 
-      {/* ── Add transaction modal ──────────────────────────── */}
-      {showAddModal && (
-        <AddTransactionModal
+      {/* ── Create / edit modal ────────────────────────────── */}
+      {modal && (
+        <TransactionModal
           categories={categories}
-          onClose={() => setShowAddModal(false)}
-          onAdd={handleAddTransaction}
+          transaction={modal.txn}
+          onClose={() => setModal(null)}
+          onSave={handleSave}
         />
       )}
 

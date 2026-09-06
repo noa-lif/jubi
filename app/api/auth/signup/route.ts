@@ -3,9 +3,11 @@
  * Port of server/app/api/routes/auth.py::signup.
  */
 import { NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { createAccessToken, hashPassword } from '@/lib/auth'
 import { HACHNASOT, SHONOT } from '@/lib/categories'
 import { prisma } from '@/lib/db'
+import { validateEmail, validateIsraeliId, validatePassword } from '@/lib/validation'
 import type { TokenResponse } from '@/types/api'
 
 interface SignupBody {
@@ -14,39 +16,20 @@ interface SignupBody {
   id_number?: unknown
 }
 
-/** Port of SignupRequest's id_number validator — Israeli ID checksum (Luhn-like). */
-function validateIsraeliId(raw: string): string | null {
-  const trimmed = raw.trim()
-  if (!trimmed) return null
-  const padded = trimmed.padStart(9, '0')
-  if (!/^\d{9}$/.test(padded)) return null
-
-  let total = 0
-  for (let i = 0; i < 9; i++) {
-    let n = Number(padded[i]) * (i % 2 === 0 ? 1 : 2)
-    if (n > 9) n -= 9
-    total += n
-  }
-  return total % 10 === 0 ? padded : null
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
   const body = (await request.json().catch(() => null)) as SignupBody | null
 
-  const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : ''
-  const password = typeof body?.password === 'string' ? body.password : ''
-  const idNumberRaw = typeof body?.id_number === 'string' ? body.id_number : ''
+  const emailResult = validateEmail(body?.email)
+  if (!emailResult.ok) return NextResponse.json({ detail: emailResult.error }, { status: 422 })
+  const email = emailResult.value
 
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return NextResponse.json({ detail: 'Invalid email address' }, { status: 422 })
-  }
-  if (password.length < 8) {
-    return NextResponse.json({ detail: 'Password must be at least 8 characters' }, { status: 422 })
-  }
-  const idNumber = validateIsraeliId(idNumberRaw)
-  if (!idNumber) {
-    return NextResponse.json({ detail: 'Invalid Israeli ID number' }, { status: 422 })
-  }
+  const passwordResult = validatePassword(body?.password)
+  if (!passwordResult.ok) return NextResponse.json({ detail: passwordResult.error }, { status: 422 })
+  const password = passwordResult.value
+
+  const idResult = validateIsraeliId(body?.id_number)
+  if (!idResult.ok) return NextResponse.json({ detail: idResult.error }, { status: 422 })
+  const idNumber = idResult.value
 
   // Reject duplicate email or ID number
   const existingEmail = await prisma.users.findUnique({ where: { email } })
@@ -60,18 +43,34 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const passwordHash = await hashPassword(password)
 
-  const user = await prisma.$transaction(async (tx) => {
-    const created = await tx.users.create({
-      data: { email, password_hash: passwordHash, id_number: idNumber },
+  let user
+  try {
+    user = await prisma.$transaction(async (tx) => {
+      const created = await tx.users.create({
+        data: { email, password_hash: passwordHash, id_number: idNumber },
+      })
+      // Every user starts with the two load-bearing categories: שונות is the
+      // fallback for uncategorized expenses, הכנסות the forced target for
+      // income. Seeded in the same transaction as the user so an account can
+      // never exist without them.
+      await tx.categories.createMany({
+        data: [
+          { user_id: created.id, name: SHONOT },
+          { user_id: created.id, name: HACHNASOT },
+        ],
+      })
+      return created
     })
-    await tx.categories.createMany({
-      data: [
-        { user_id: created.id, name: SHONOT },
-        { user_id: created.id, name: HACHNASOT },
-      ],
-    })
-    return created
-  })
+  } catch (err) {
+    // The duplicate checks above are a check-then-act race: two concurrent
+    // signups with the same email both pass them, and the loser hits the
+    // unique constraint. The database is the real arbiter, so translate its
+    // rejection into the same 409 rather than letting it surface as a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      return NextResponse.json({ detail: 'An account with these details already exists' }, { status: 409 })
+    }
+    throw err
+  }
 
   const response: TokenResponse = {
     access_token: await createAccessToken(user.id),

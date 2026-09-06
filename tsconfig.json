@@ -40,6 +40,8 @@
     "lib/**/*.ts",
     "types/**/*.ts",
     "api-client/**/*.ts",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],

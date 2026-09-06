@@ -29,11 +29,38 @@ export interface TransactionResponse {
   category_name: string | null
 }
 
+/** One slice of the monthly expense pie, aggregated server-side. */
+export interface CategoryBreakdown {
+  category_id: number | null
+  category_name: string | null
+  /** Positive; expenses only. */
+  total: number
+}
+
 export interface MonthlySummaryResponse {
   year: number
   month: number
+  /** Net across the month: expenses (positive) plus income (negative). */
   total: number
   transaction_count: number
+  /** Absolute value of all income in the month. */
+  income_total: number
+  /** Sum of all expenses in the month. */
+  expense_total: number
+  by_category: CategoryBreakdown[]
+}
+
+/**
+ * Envelope for paginated list endpoints. `total` is the count matching the
+ * filter, not the page, so the client can show progress and decide whether
+ * to request another page.
+ */
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
 }
 
 export interface MonthImported {

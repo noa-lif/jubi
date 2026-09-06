@@ -6,7 +6,7 @@
 import type { categories as Category, transactions as Transaction, Prisma } from '@prisma/client'
 import type { TransactionResponse } from '@/types/api'
 import { ApiError } from './errors'
-import { findHachnasot, findShonot } from './categories'
+import { findHachnasot, findShonot, HACHNASOT } from './categories'
 
 type TransactionWithCategory = Transaction & { categories: Category | null }
 
@@ -44,6 +44,9 @@ export function monthRange(year: number, month: number): { start: Date; end: Dat
  * create_transaction / update_transaction_category in transactions.py:
  *   - Negative amounts (income) are always forced to "הכנסות".
  *   - An explicit category_id must belong to the current user.
+ *   - An expense may not be filed under "הכנסות" (the mirror of the rule
+ *     above — without it, flipping an income transaction's amount to
+ *     positive would leave it stranded in the income category).
  *   - Otherwise falls back to "שונות".
  */
 export async function resolveCategoryId(
@@ -59,8 +62,15 @@ export async function resolveCategoryId(
 
   if (categoryId != null) {
     const category = await tx.categories.findUnique({ where: { id: categoryId } })
+    // Ownership is checked here rather than in a `where` clause so that a
+    // category belonging to someone else is rejected outright instead of
+    // silently falling back to שונות.
     if (!category || category.user_id !== userId) {
       throw new ApiError(400, 'Invalid category')
+    }
+    if (category.name === HACHNASOT) {
+      const shonot = await findShonot(tx, userId)
+      return shonot?.id ?? null
     }
     return categoryId
   }

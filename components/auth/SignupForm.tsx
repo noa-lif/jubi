@@ -5,18 +5,9 @@ import { authApi } from '@/api-client/auth'
 import { ApiClientError } from '@/api-client/client'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
-
-function validateIsraeliId(id: string): boolean {
-  const padded = id.trim().padStart(9, '0')
-  if (!/^\d{9}$/.test(padded)) return false
-  let total = 0
-  for (let i = 0; i < 9; i++) {
-    let n = Number.parseInt(padded[i], 10) * (i % 2 === 0 ? 1 : 2)
-    if (n > 9) n -= 9
-    total += n
-  }
-  return total % 10 === 0
-}
+// Shared with the signup route, so the form and the API can never disagree
+// about which ID numbers are valid.
+import { validateEmail, validateIsraeliId, validatePassword } from '@/lib/validation'
 
 export default function SignupForm({ onSuccess }: { onSuccess: (token: string) => void }) {
   const [form, setForm] = useState({
@@ -36,10 +27,19 @@ export default function SignupForm({ onSuccess }: { onSuccess: (token: string) =
 
   const validate = (): Record<string, string> => {
     const errs: Record<string, string> = {}
-    if (form.password.length < 8) errs.password = 'הסיסמה חייבת להכיל לפחות 8 תווים'
+
+    if (!validateEmail(form.email).ok) errs.email = 'כתובת אימייל אינה תקינה'
+
+    const password = validatePassword(form.password)
+    if (!password.ok) {
+      errs.password =
+        form.password.length < 8 ? 'הסיסמה חייבת להכיל לפחות 8 תווים' : 'הסיסמה ארוכה מדי'
+    }
     if (form.password !== form.confirmPassword) errs.confirmPassword = 'הסיסמאות אינן תואמות'
+
     if (!form.idNumber.trim()) errs.idNumber = 'נדרש מספר תעודת זהות'
-    else if (!validateIsraeliId(form.idNumber)) errs.idNumber = 'מספר תעודת זהות אינו תקין'
+    else if (!validateIsraeliId(form.idNumber).ok) errs.idNumber = 'מספר תעודת זהות אינו תקין'
+
     return errs
   }
 
@@ -73,6 +73,7 @@ export default function SignupForm({ onSuccess }: { onSuccess: (token: string) =
         placeholder="you@example.com"
         value={form.email}
         onChange={handleChange}
+        error={errors.email}
         required
       />
       <Input

@@ -17,7 +17,6 @@ model categories {
   transactions transactions[]
 
   @@unique([user_id, name], map: "uq_category_user_name")
-  @@index([id], map: "ix_categories_id")
   @@index([user_id], map: "ix_categories_user_id")
 }
 
@@ -32,7 +31,6 @@ model file_imports {
   users             users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, file_hash], map: "uq_file_import_user_hash")
-  @@index([id], map: "ix_file_imports_id")
   @@index([user_id], map: "ix_file_imports_user_id")
 }
 
@@ -45,7 +43,6 @@ model password_reset_tokens {
   used       Boolean
   users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([id], map: "ix_password_reset_tokens_id")
   @@index([user_id], map: "ix_password_reset_tokens_user_id")
 }
 
@@ -60,9 +57,15 @@ model transactions {
   categories    categories? @relation(fields: [category_id], references: [id], onUpdate: NoAction)
   users         users       @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([date], map: "ix_transactions_date")
-  @@index([id], map: "ix_transactions_id")
-  @@index([user_id], map: "ix_transactions_user_id")
+  // The workhorse index. Every read path in the app filters by user_id AND a
+  // date range together (month listing, monthly summary, upload dedup), and a
+  // query can only use one single-column index per scan — so the separate
+  // user_id and date indexes forced Postgres to pick one and filter the rest
+  // by hand. Column order matters: user_id is an equality match so it goes
+  // first, letting the date range scan a contiguous slice of the index.
+  @@index([user_id, date], map: "ix_transactions_user_id_date")
+  // Supports the category-deletion reassignment (WHERE category_id = ...).
+  @@index([category_id], map: "ix_transactions_category_id")
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -75,6 +78,4 @@ model users {
   file_imports          file_imports[]
   password_reset_tokens password_reset_tokens[]
   transactions          transactions[]
-
-  @@index([id], map: "ix_users_id")
 }

@@ -112,7 +112,11 @@ function parseCsvText(text: string): string[][] {
       }
       continue
     }
-    if (c === '"') inQuotes = true
+    // A quote only opens a quoted field at the *start* of a field (RFC4180).
+    // Treating a mid-field quote as an opener would swallow the rest of the
+    // file, and Israeli statements hit this constantly: the summary row label
+    // סה"כ contains a bare double quote.
+    if (c === '"' && field.length === 0) inQuotes = true
     else if (c === ',') {
       row.push(field)
       field = ''

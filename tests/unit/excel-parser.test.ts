@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import ExcelJS from 'exceljs'
+import JSZip from 'jszip'
 import type { Prisma } from '@prisma/client'
 import {
   deduplicateTransactions,
@@ -305,6 +306,57 @@ describe('parseStatementFile — XLSX', () => {
 
     expect(transactions).toHaveLength(1)
     expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-03-15')
+  })
+
+  // Reproduces a real bank export (seen from an Israeli credit card issuer)
+  // that ExcelJS 4.4.0 can't read as-is: its internal OOXML uses an explicit
+  // namespace prefix (<x:workbook>, <x:sheets>, ...) instead of the
+  // unprefixed tags Excel itself always emits, and its table relationship
+  // targets are absolute package paths (Target="/xl/tables/table1.xml")
+  // instead of the relative form ExcelJS expects. Both are valid OOXML, but
+  // ExcelJS's SAX parser matches bare tag names and its table lookup matches
+  // by literal relative-style key, so together they used to crash the
+  // uploads route with a 500 instead of importing the file.
+  it('parses a real xlsx whose OOXML uses a namespace prefix and absolute table-relationship targets', async () => {
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Sheet1')
+    sheet.addTable({
+      name: 'ApprovedTransactions1',
+      ref: 'A1',
+      headerRow: true,
+      columns: [{ name: 'תאריך' }, { name: 'שם בית עסק' }, { name: 'סכום' }],
+      rows: [
+        ['01/03/2026', 'שופרסל', 150.5],
+        ['02/03/2026', 'קפה', 22],
+      ],
+    })
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer())
+
+    const zip = await JSZip.loadAsync(buffer)
+    const nsUri = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    for (const entry of Object.values(zip.files)) {
+      if (entry.dir || !entry.name.startsWith('xl/') || !entry.name.endsWith('.xml')) continue
+      const xml = await entry.async('string')
+      if (!xml.includes(nsUri)) continue
+      // Rewrite the default namespace onto an explicit "x" prefix, as the
+      // real bank export does.
+      const prefixed = xml
+        .replace(`xmlns="${nsUri}"`, `xmlns:x="${nsUri}"`)
+        .replace(/<(\/?)(workbook|sheets|sheet|worksheet|dimension|sheetViews|sheetView|selection|cols|col|sheetData|row|c|v|tableParts|tablePart|table|autoFilter|tableColumns|tableColumn|is|t)\b/g, '<$1x:$2')
+      zip.file(entry.name, prefixed)
+    }
+    const relsPath = 'xl/worksheets/_rels/sheet1.xml.rels'
+    const relsXml = await zip.file(relsPath)!.async('string')
+    zip.file(relsPath, relsXml.replace('Target="../tables/table1.xml"', 'Target="/xl/tables/table1.xml"'))
+
+    const mutatedBuffer = await zip.generateAsync({ type: 'nodebuffer' })
+
+    const db = stubDb(['שונות'])
+    const { transactions } = await parseStatementFile(mutatedBuffer, 'stmt.xlsx', db.client, USER)
+
+    expect(transactions).toHaveLength(2)
+    expect(transactions[0].amount).toBe(150.5)
+    expect(transactions[0].business_name).toBe('שופרסל')
   })
 })
 

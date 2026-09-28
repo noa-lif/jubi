@@ -14,7 +14,9 @@
  * Deviation from the original: legacy binary .xls is not supported (dropped
  * for a security reason — see plan/conversation — only .xlsx and .csv).
  */
+import path from 'node:path'
 import ExcelJS from 'exceljs'
+import JSZip from 'jszip'
 import type { Prisma } from '@prisma/client'
 
 // ---------------------------------------------------------------------------
@@ -69,9 +71,73 @@ function toIsoDateOnly(date: Date): string {
   return `${y}-${m}-${d}`
 }
 
+// Some exporters (seen from at least one Israeli bank) emit the OOXML parts
+// under an explicit namespace prefix, e.g. <x:workbook><x:sheets>... instead
+// of the unprefixed <workbook><sheets> that Excel itself always produces.
+// Both are valid XML, but ExcelJS's SAX parser matches bare tag names
+// ('workbook', 'sheets', ...) and silently fails to populate the workbook
+// model when the prefix is present. Strip the prefix from element tags
+// before handing the file to ExcelJS.
+function stripMainNamespacePrefix(xml: string): string {
+  const nsUri = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const match = xml.match(new RegExp(`xmlns:([A-Za-z0-9_]+)="${nsUri}"`))
+  const prefix = match?.[1]
+  if (!prefix) return xml
+
+  return xml
+    .replace(new RegExp(`xmlns:${prefix}="${nsUri}"`), `xmlns="${nsUri}"`)
+    .replace(new RegExp(`<${prefix}:`, 'g'), '<')
+    .replace(new RegExp(`</${prefix}:`, 'g'), '</')
+}
+
+// Table relationship targets are supposed to be relative to the worksheet's
+// own folder (e.g. targets in xl/worksheets/_rels/sheet1.xml.rels are
+// relative to xl/worksheets/, so a table part is "../tables/table1.xml").
+// The same exporter above instead writes them as absolute package paths
+// (Target="/xl/tables/table1.xml"). Both are valid OOXML, and ExcelJS
+// already special-cases absolute `/xl/...` targets when resolving
+// worksheets from xl/_rels/workbook.xml.rels — but it has no equivalent
+// handling for table relationships (lib/xlsx/xform/sheet/worksheet-xform.js
+// looks tables up by the literal relative-style key it built while reading
+// xl/tables/*.xml). An absolute table target silently resolves to
+// `undefined`, which later crashes assuming every table part resolved.
+// Rewrite only table-relationship targets in worksheet .rels files to the
+// relative form ExcelJS expects; leave every other relationship untouched
+// since ExcelJS already handles those absolute paths correctly.
+function fixAbsoluteTableRelationshipTargets(xml: string, relsPath: string): string {
+  const partDir = relsPath.replace(/\/_rels\/[^/]+$/, '')
+
+  return xml.replace(/<Relationship\b[^>]*\/>/g, (tag) => {
+    if (!tag.includes('/relationships/table"')) return tag
+    const targetMatch = tag.match(/Target="(\/[^"]+)"/)
+    if (!targetMatch) return tag
+    const absoluteTarget = targetMatch[1].replace(/^\//, '')
+    let relative = path.posix.relative(partDir, absoluteTarget)
+    if (!relative.startsWith('.')) relative = `./${relative}`
+    return tag.replace(targetMatch[0], `Target="${relative}"`)
+  })
+}
+
+async function normalizeXlsxBuffer(buffer: Buffer): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(buffer)
+  const xmlFiles = Object.values(zip.files).filter(
+    (entry) =>
+      !entry.dir && entry.name.startsWith('xl/') && (entry.name.endsWith('.xml') || entry.name.endsWith('.rels')),
+  )
+  for (const entry of xmlFiles) {
+    const xml = await entry.async('string')
+    let normalized = stripMainNamespacePrefix(xml)
+    if (/xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/.test(entry.name)) {
+      normalized = fixAbsoluteTableRelationshipTargets(normalized, entry.name)
+    }
+    if (normalized !== xml) zip.file(entry.name, normalized)
+  }
+  return zip.generateAsync({ type: 'nodebuffer' })
+}
+
 async function loadXlsxGrid(buffer: Buffer): Promise<string[][]> {
   const workbook = new ExcelJS.Workbook()
-  await workbook.xlsx.load(buffer as unknown as ArrayBuffer)
+  await workbook.xlsx.load((await normalizeXlsxBuffer(buffer)) as unknown as ArrayBuffer)
   const worksheet = workbook.worksheets[0]
   if (!worksheet) throw new ParseError('The uploaded file has no worksheets.')
 

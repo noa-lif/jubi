@@ -20,19 +20,71 @@ import JSZip from 'jszip'
 import type { Prisma } from '@prisma/client'
 
 // ---------------------------------------------------------------------------
-// Column alias registry — verbatim port of COLUMN_ALIASES.
+// Column alias registry — ported from COLUMN_ALIASES, with the amount and date
+// aliases split by the role their header name implies (see below).
 // ---------------------------------------------------------------------------
 
+/**
+ * A statement's amount columns are not synonyms. On an installment row they
+ * hold different numbers: the full original purchase ("סכום עסקה" 1347.96)
+ * versus what is actually billed this cycle ("סכום חיוב" 112.33). The app
+ * records what was charged this month, so the roles are ranked and the
+ * charge column wins. 'generic' headers carry no evidence either way — on an
+ * ordinary row they equal the charge column anyway, and on an installment row
+ * issuers put this month's charge there.
+ */
+type AmountRole = 'charge' | 'generic' | 'transaction'
+
+const AMOUNT_RANK: Record<AmountRole, number> = { charge: 0, generic: 1, transaction: 2 }
+
+const AMOUNT_ALIAS_ROLES = new Map<string, AmountRole>([
+  ['סכום חיוב', 'charge'],
+  ['סכום החיוב', 'charge'],
+  ['סכום לחיוב', 'charge'],
+  ['charge amount', 'charge'],
+  ['charged amount', 'charge'],
+  ['amount', 'generic'],
+  ['סכום', 'generic'],
+  ['sum', 'generic'],
+  ['debit', 'generic'],
+  ['credit', 'generic'],
+  ['סכום בש"כ', 'generic'],
+  ['סכום בשקלים', 'generic'],
+  ['סכום עסקה', 'transaction'],
+  ['transaction amount', 'transaction'],
+])
+
+/**
+ * Same idea for dates. A 'charge' column already names the date this
+ * particular installment is billed, so it is used verbatim; a 'purchase'
+ * column holds the original purchase date that statements repeat on every
+ * row of a plan, which still has to be shifted to this installment's month.
+ * 'ambiguous' headers are resolved from the values (see pickRowDate).
+ */
+type DateRole = 'charge' | 'purchase' | 'ambiguous'
+
+const DATE_ALIAS_ROLES = new Map<string, DateRole>([
+  ['תאריך חיוב', 'charge'],
+  ['תאריך החיוב', 'charge'],
+  ['מועד חיוב', 'charge'],
+  ['מועד החיוב', 'charge'],
+  ['charge date', 'charge'],
+  ['billing date', 'charge'],
+  ['posting date', 'charge'],
+  ['תאריך עסקה', 'purchase'],
+  ['תאריך רכישה', 'purchase'],
+  ['תאריך פעולה', 'purchase'],
+  ['פעולה תאריך', 'purchase'],
+  ['transaction date', 'purchase'],
+  ['purchase date', 'purchase'],
+  ['date', 'ambiguous'],
+  ['תאריך', 'ambiguous'],
+])
+
 const COLUMN_ALIASES: Record<'amount' | 'date' | 'business_name' | 'category', Set<string>> = {
-  amount: new Set([
-    'amount', 'סכום', 'סכום עסקה', 'סכום חיוב', 'סכום בש"כ', 'סכום בשקלים',
-    'charge amount', 'charged amount', 'debit', 'credit', 'sum',
-    'transaction amount',
-  ]),
-  date: new Set([
-    'date', 'תאריך', 'תאריך עסקה', 'תאריך רכישה', 'תאריך פעולה',
-    'transaction date', 'purchase date', 'פעולה תאריך',
-  ]),
+  // Derived from the role maps above so the two can never drift apart.
+  amount: new Set(AMOUNT_ALIAS_ROLES.keys()),
+  date: new Set(DATE_ALIAS_ROLES.keys()),
   business_name: new Set([
     'business name', 'business', 'שם בית עסק', 'שם בית העסק', 'שם עסק', 'שם בית-עסק',
     'merchant', 'תיאור', 'תאור', 'description', 'name', 'פירוט',
@@ -271,6 +323,197 @@ function buildColMap(headerRow: string[]): Partial<Record<keyof typeof COLUMN_AL
   return colMap
 }
 
+// A statement row can carry more than one date-like column (an installment's
+// original purchase date alongside the date that installment is charged).
+// Rather than committing to the leftmost match the way buildColMap does,
+// collect every date column with the role its header implies, and let
+// pickRowDate decide.
+interface DateColumn {
+  index: number
+  role: DateRole
+}
+
+function findDateColumns(headerRow: string[]): DateColumn[] {
+  const cols: DateColumn[] = []
+  headerRow.forEach((col, index) => {
+    const role = DATE_ALIAS_ROLES.get(col.trim().toLowerCase())
+    if (role) cols.push({ index, role })
+  })
+  return cols
+}
+
+interface PickedDate {
+  date: Date
+  /** Whether `date` is already this installment's charge date, or a purchase date still needing the shift. */
+  role: 'charge' | 'purchase'
+}
+
+/**
+ * Chooses the date a row should be bucketed under — the date it is *charged*,
+ * since that is what a monthly tracker reports on — and reports whether that
+ * value is already the charge date or merely the purchase date the caller
+ * must still shift.
+ *
+ *   1. A column whose header names a charge/billing date — use it verbatim.
+ *      A label beats a value: a column explicitly called "תאריך חיוב" holding
+ *      an earlier date than its neighbour is pathological, and trusting the
+ *      label is the less surprising failure mode.
+ *   2. Otherwise, headers that name a purchase date — that is a purchase date.
+ *   3. Generic headers ("date", "תאריך") carry no signal on their own, but a
+ *      purchase never postdates its own charge, so when two of them disagree
+ *      the later value is the charge date. When they agree, or there is only
+ *      one, there is nothing to go on and it is treated as a purchase date so
+ *      the installment shift still runs.
+ *
+ * Columns that fail to parse in this row are ignored rather than failing it.
+ */
+function pickRowDate(row: string[], cols: DateColumn[]): PickedDate {
+  const parsed: { date: Date; role: DateRole }[] = []
+  for (const { index, role } of cols) {
+    try {
+      parsed.push({ date: parseDate(row[index] ?? ''), role })
+    } catch {
+      continue
+    }
+  }
+  if (parsed.length === 0) {
+    throw new ParseError(`Cannot parse date from columns: ${JSON.stringify(cols.map((c) => row[c.index]))}`)
+  }
+
+  const latestOf = (items: { date: Date }[]) =>
+    items.reduce((best, cur) => (cur.date > best.date ? cur : best)).date
+
+  const charge = parsed.filter((p) => p.role === 'charge')
+  if (charge.length > 0) return { date: latestOf(charge), role: 'charge' }
+
+  if (parsed.every((p) => p.role === 'purchase')) {
+    return { date: latestOf(parsed), role: 'purchase' }
+  }
+
+  const latest = latestOf(parsed)
+  const earliest = parsed.reduce((best, cur) => (cur.date < best.date ? cur : best)).date
+  return { date: latest, role: latest > earliest ? 'charge' : 'purchase' }
+}
+
+// Matches a free-text installment note cell, e.g. "תשלום 2 מתוך 12" or
+// "payment 2 of 12" — captures (current installment, total installments).
+// Requires the payment/installment keyword (rather than a bare "2/12") to
+// avoid misreading unrelated numeric columns as installment progress.
+const INSTALLMENT_RE = /(?:תשלום|payment|installment)\D{0,10}(\d{1,2})\D{1,10}(?:מתוך|out of|of)\D{0,5}(\d{1,2})/i
+
+interface InstallmentNote {
+  number: number
+  total: number
+}
+
+/**
+ * Reads a row's installment note once, for both the date and the amount to
+ * resolve from. They must agree on whether a row belongs to a plan at all —
+ * otherwise a row could be date-shifted but not amount-divided.
+ */
+function findInstallmentNote(row: string[]): InstallmentNote | null {
+  for (const cell of row) {
+    const match = INSTALLMENT_RE.exec(cell)
+    if (!match) continue
+    const number = Number(match[1])
+    const total = Number(match[2])
+    // "תשלום 0 מתוך 0" and N > M are garbage the regex happily matches; a
+    // single-payment "1 of 1" is not a plan either.
+    if (total < 2 || number < 1 || number > total) continue
+    return { number, total }
+  }
+  return null
+}
+
+/**
+ * Adds whole months to a date, clamping the day to the target month's last
+ * day rather than overflowing into the month after (e.g. Jan 31 + 1 month
+ * lands on Feb 28, not Mar 3).
+ */
+function addMonthsClamped(date: Date, months: number): Date {
+  if (months === 0) return date
+  const day = date.getUTCDate()
+  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1))
+  const daysInTargetMonth = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate()
+  target.setUTCDate(Math.min(day, daysInTargetMonth))
+  return target
+}
+
+/**
+ * Resolves the date a row is charged on.
+ *
+ * When the file states that date directly (a charge/billing column) it already
+ * belongs to this installment and must NOT be shifted. Only when all we have
+ * is the original purchase date — which statements repeat verbatim on every
+ * installment of a plan — is this installment's month reconstructed as
+ * purchase + (N-1) months. Keeping the shift behind that branch is what stops
+ * a charge date being pushed a further N-1 months into the future.
+ */
+function resolveRowDate(row: string[], cols: DateColumn[], note: InstallmentNote | null): Date {
+  const { date, role } = pickRowDate(row, cols)
+  if (role === 'charge' || !note || note.number <= 1) return date
+  return addMonthsClamped(date, note.number - 1)
+}
+
+interface AmountColumn {
+  index: number
+  role: AmountRole
+}
+
+/** Mirrors findDateColumns; sorted most-preferred first so callers can walk the list. */
+function findAmountColumns(headerRow: string[]): AmountColumn[] {
+  const cols: AmountColumn[] = []
+  headerRow.forEach((col, index) => {
+    const role = AMOUNT_ALIAS_ROLES.get(col.trim().toLowerCase())
+    if (role) cols.push({ index, role })
+  })
+  return cols.sort((a, b) => AMOUNT_RANK[a.role] - AMOUNT_RANK[b.role] || a.index - b.index)
+}
+
+/** Rounds to agorot symmetrically — Math.round alone biases -0.5 toward zero. */
+function roundCents(value: number): number {
+  return ((value < 0 ? -1 : 1) * Math.round(Math.abs(value) * 100)) / 100
+}
+
+/**
+ * Picks the amount actually charged this billing cycle.
+ *
+ * Columns are tried most-specific first and the first that parses wins; this
+ * only ever *selects* between columns, it never computes from two of them, so
+ * an ordinary row carrying both a charge and a transaction column (which hold
+ * the same number) is unaffected.
+ *
+ * Only a column that explicitly names the *transaction* total is divided, as
+ * that column reports the whole purchase on every row of the plan. A
+ * generically-named column is left alone: issuers put this month's charge
+ * there, and dividing a correct 112.33 into 9.36 would produce a wrong number
+ * that looks plausible, where leaving a too-large one is visibly wrong.
+ */
+function pickRowAmount(row: string[], cols: AmountColumn[], note: InstallmentNote | null): number {
+  let best: { value: number; role: AmountRole } | null = null
+  for (const { index, role } of cols) {
+    try {
+      best = { value: cleanAmount(row[index] ?? ''), role }
+      break
+    } catch {
+      continue
+    }
+  }
+  if (!best) {
+    throw new ParseError(`Cannot parse amount from columns: ${JSON.stringify(cols.map((c) => row[c.index]))}`)
+  }
+
+  if (!note || best.role !== 'transaction') return best.value
+
+  // Issuers do load the rounding remainder onto one installment, but which one
+  // is issuer-specific and undocumented, and we only ever see one row at a
+  // time — guessing wrong is as wrong as not guessing. Worst case is a few
+  // agorot on a single row of the plan. This branch is also the last resort:
+  // whenever the file has a charge column we use the issuer's exact number,
+  // including their own remainder handling.
+  return roundCents(best.value / note.total)
+}
+
 // ---------------------------------------------------------------------------
 // Row-level helpers
 // ---------------------------------------------------------------------------
@@ -412,9 +655,16 @@ export async function parseStatementFile(
   const headerRow = raw[headerIdx] ?? []
   const dataRows = raw.slice(headerIdx + 1)
 
+  // colMap now only supplies business_name and category — amount and date are
+  // resolved per row from every matching column, not just the leftmost one.
   const colMap = buildColMap(headerRow)
-  const required: (keyof typeof COLUMN_ALIASES)[] = ['amount', 'date', 'business_name']
-  const missing = required.filter((key) => colMap[key] === undefined)
+  const dateCols = findDateColumns(headerRow)
+  const amountCols = findAmountColumns(headerRow)
+
+  const missing: string[] = []
+  if (amountCols.length === 0) missing.push('amount')
+  if (dateCols.length === 0) missing.push('date')
+  if (colMap.business_name === undefined) missing.push('business_name')
   if (missing.length > 0) {
     const visibleCols = headerRow.filter((c) => c.trim().length > 0)
     throw new ParseError(
@@ -440,8 +690,9 @@ export async function parseStatementFile(
       continue
     }
     try {
-      const amount = cleanAmount(row[colMap.amount!] ?? '')
-      const date = parseDate(row[colMap.date!] ?? '')
+      const note = findInstallmentNote(row)
+      const amount = pickRowAmount(row, amountCols, note)
+      const date = resolveRowDate(row, dateCols, note)
       const business = (row[colMap.business_name!] ?? '').trim()
       if (!business || business.toLowerCase() === 'nan') {
         rowsSkipped++

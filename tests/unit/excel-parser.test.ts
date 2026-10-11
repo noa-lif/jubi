@@ -205,6 +205,253 @@ describe('parseStatementFile — date formats', () => {
     expect(transactions[0].date.getUTCFullYear()).toBe(2068)
     expect(transactions[1].date.getUTCFullYear()).toBe(1969)
   })
+
+  // Statements often carry two date columns per row: the original purchase
+  // date and the date that row is actually charged. This is a monthly
+  // tracker, so the charge date is the one worth storing — a purchase made in
+  // April and still being paid off in September belongs to September's total.
+  // When the issuer labels the columns, the label decides; column order never
+  // does.
+  it('prefers an explicit charge-date column over the purchase date', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך עסקה,תאריך חיוב,שם בית עסק,סכום\n14/04/2026,02/09/2026,Shop,10\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-02')
+  })
+
+  it('prefers the charge column regardless of which column comes first', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`charge date,purchase date,business name,amount\n02/09/2026,14/04/2026,Shop,10\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-02')
+  })
+
+  // With two unlabelled columns there is no header signal, but a purchase can
+  // never postdate its own charge, so the later value is the charge date.
+  it('reads the later of two unlabelled date columns as the charge date', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,תאריך,business name,amount\n14/04/2026,02/09/2026,Shop,10\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-02')
+  })
+
+  it('falls back to whichever date column parses when the other is unparseable', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך עסקה,תאריך חיוב,שם בית עסק,סכום\n15/03/2026,bad,Shop,10\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-03-15')
+  })
+})
+
+describe('parseStatementFile — installment plans', () => {
+  // Statements repeat the *original purchase date* on every installment row
+  // of a plan (rather than that installment's own charge date), with a free
+  // text note like "תשלום 2 מתוך 12" (payment 2 of 12) marking progress.
+  // Payment N is actually charged N-1 months after the purchase date, so the
+  // parser must shift the date forward accordingly rather than taking the
+  // purchase date at face value.
+  it('shifts the date forward by (installment - 1) months for a Hebrew installment note', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,amount,note\n05/08/2026,ליברה עסקאות ביטוח,112.33,תשלום 2 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-05')
+  })
+
+  it('shifts the date forward for an English "payment N of M" note', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,amount,note\n14/04/2026,Some Shop,105.42,payment 6 of 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-14')
+  })
+
+  it('does not shift the first installment', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,amount,note\n05/08/2026,Shop,50,תשלום 1 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-08-05')
+  })
+
+  it('leaves ordinary (non-installment) rows unchanged', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,amount,note\n05/08/2026,Shop,50,הוראת קבע\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-08-05')
+  })
+
+  it('clamps day-of-month overflow (e.g. Jan 31 + 1 month lands on Feb 28)', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,amount,note\n31/01/2026,Shop,50,תשלום 2 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-02-28')
+  })
+
+  it('ignores a nonsensical installment note rather than shifting by it', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,amount,note\n05/08/2026,Shop,50,תשלום 14 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-08-05')
+  })
+
+  // The shift reconstructs a charge date the file didn't give us. When the
+  // file *does* give us one, shifting it again would push the row a further
+  // N-1 months out — five months, for "payment 6 of 12".
+  it('does not shift a row that already carries its own charge date', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(
+      `תאריך עסקה,תאריך חיוב,שם בית עסק,סכום,הערות\n14/04/2026,02/09/2026,Some Shop,105.42,תשלום 6 מתוך 12\n`,
+    )
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-02')
+  })
+
+  it('does not shift an installment row with an English charge-date column', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(
+      `purchase date,charge date,business name,amount,note\n14/04/2026,02/09/2026,Shop,105.42,payment 6 of 12\n`,
+    )
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-02')
+  })
+
+  it('does not shift when the charge date came from two unlabelled columns', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,תאריך,business name,amount,note\n14/04/2026,02/09/2026,Shop,10,payment 6 of 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-02')
+  })
+
+  it('still shifts when the only date column is labelled as the purchase date', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך עסקה,שם בית עסק,סכום,הערות\n14/04/2026,Shop,105.42,תשלום 6 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].date.toISOString().slice(0, 10)).toBe('2026-09-14')
+  })
+})
+
+describe('parseStatementFile — installment amounts', () => {
+  // On an installment row "סכום עסקה" is the full original purchase and
+  // "סכום חיוב" is what this month is actually charged. They are different
+  // numbers, and the app records what was charged — so the charge column
+  // wins whichever side of the file the issuer happened to put it on.
+  it('prefers the charge column over the transaction column', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(
+      `תאריך,שם בית עסק,סכום עסקה,סכום חיוב,הערות\n05/08/2026,ליברה,1347.96,112.33,תשלום 2 מתוך 12\n`,
+    )
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(112.33)
+  })
+
+  it('prefers the charge column regardless of column order', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(
+      `תאריך,שם בית עסק,סכום חיוב,סכום עסקה,הערות\n05/08/2026,ליברה,112.33,1347.96,תשלום 2 מתוך 12\n`,
+    )
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(112.33)
+  })
+
+  // When the only money column is the purchase total, the statement repeats
+  // it on every row of the plan, so this month's share has to be derived.
+  it('divides the transaction amount by the installment total', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך,שם בית עסק,סכום עסקה,הערות\n05/08/2026,ליברה,1347.96,תשלום 2 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(112.33)
+  })
+
+  it('rounds a derived installment to agorot', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,transaction amount,note\n05/08/2026,Shop,1000,payment 2 of 3\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(333.33)
+  })
+
+  it('leaves a lone charge column untouched', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך,שם בית עסק,סכום חיוב,הערות\n05/08/2026,ליברה,112.33,תשלום 2 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(112.33)
+  })
+
+  // A generically-named column carries no evidence of which number it holds,
+  // and in practice issuers put this month's charge there. Dividing it would
+  // turn a correct 112.33 into a plausible-looking but wrong 9.36, so the
+  // parser deliberately leaves it alone.
+  it('does not divide a generically-named amount column', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך,שם בית עסק,סכום,הערות\n05/08/2026,ליברה,112.33,תשלום 2 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(112.33)
+  })
+
+  it('falls back to the transaction column when the charge cell is blank', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך,שם בית עסק,סכום חיוב,סכום עסקה,הערות\n05/08/2026,ליברה,,1347.96,תשלום 2 מתוך 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(112.33)
+  })
+
+  it('leaves ordinary rows with two amount columns alone', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך,שם בית עסק,סכום עסקה,סכום חיוב\n05/08/2026,שופרסל,150.50,150.50\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(150.5)
+  })
+
+  it('does not divide a single-payment row', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`תאריך,שם בית עסק,סכום עסקה,הערות\n05/08/2026,שופרסל,150.50,תשלום 1 מתוך 1\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(150.5)
+  })
+
+  it('preserves the sign of a credit and still files it under הכנסות', async () => {
+    const db = stubDb(['שונות', 'הכנסות'])
+    const file = csv(`date,business name,transaction amount,note\n05/08/2026,Refund,-1200,payment 2 of 12\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(-100)
+    expect(transactions[0].category_id).toBe(db.idOf('הכנסות'))
+  })
+
+  it('ignores a malformed installment note rather than dividing by it', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(`date,business name,transaction amount,note\n05/08/2026,Shop,1200,payment 0 of 0\n`)
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions[0].amount).toBe(1200)
+  })
+
+  // The shape this feature exists for: a real statement carries both date
+  // columns and both amount columns, and lists several installments of one
+  // plan. Each row must land in the month it is charged, carrying that
+  // month's charge — not twelve copies of the full 1347.96 in August.
+  it('spreads a plan across months at the per-month charge', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(
+      `תאריך עסקה,תאריך חיוב,שם בית עסק,סכום עסקה,סכום חיוב,הערות\n` +
+        `05/08/2026,05/08/2026,ליברה,1347.96,112.33,תשלום 1 מתוך 12\n` +
+        `05/08/2026,05/09/2026,ליברה,1347.96,112.33,תשלום 2 מתוך 12\n` +
+        `05/08/2026,05/10/2026,ליברה,1347.96,112.33,תשלום 3 מתוך 12\n`,
+    )
+    const { transactions } = await parseStatementFile(file, 'x.csv', db.client, USER)
+
+    expect(transactions.map((t) => t.date.toISOString().slice(0, 10))).toEqual([
+      '2026-08-05',
+      '2026-09-05',
+      '2026-10-05',
+    ])
+    expect(transactions.map((t) => t.amount)).toEqual([112.33, 112.33, 112.33])
+  })
+
+  it('still skips a row where no amount column parses', async () => {
+    const db = stubDb(['שונות'])
+    const file = csv(
+      `date,business name,charge amount,transaction amount\n05/08/2026,Good,,100\n06/08/2026,Bad,abc,xyz\n`,
+    )
+    const { transactions, rowsSkipped } = await parseStatementFile(file, 'x.csv', db.client, USER)
+    expect(transactions).toHaveLength(1)
+    expect(rowsSkipped).toBe(1)
+  })
 })
 
 describe('parseStatementFile — rows it skips', () => {

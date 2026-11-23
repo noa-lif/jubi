@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { categoriesApi } from '@/api-client/categories'
 import { ApiClientError } from '@/api-client/client'
 import { transactionsApi, type CreateTransactionInput } from '@/api-client/transactions'
-import ExpensePieChart from '@/components/dashboard/ExpensePieChart'
+import ExpensePieChart, { type CategoryFilter } from '@/components/dashboard/ExpensePieChart'
 import ExpenseSummaryWidget from '@/components/dashboard/ExpenseSummaryWidget'
 import FileUploadWidget from '@/components/dashboard/FileUploadWidget'
 import MonthNavigator from '@/components/dashboard/MonthNavigator'
@@ -78,6 +78,9 @@ export default function DashboardPage() {
   const [offset, setOffset] = useState(0)
   const [pageMeta, setPageMeta] = useState({ total: 0, limit: PAGE_SIZE, offset: 0, has_more: false })
 
+  // ── Category filter (set by clicking a pie slice) ────────────────────────
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter | null>(null)
+
   // ── Create / edit modal ─────────────────────────────────────────────────
   // null = closed. { txn: null } = create. { txn } = edit that transaction.
   const [modal, setModal] = useState<{ txn: TransactionResponse | null } | null>(null)
@@ -104,7 +107,7 @@ export default function DashboardPage() {
     setLoadingTxns(true)
     setLoadingSummary(true)
     Promise.all([
-      transactionsApi.list({ year, month, limit: PAGE_SIZE, offset }),
+      transactionsApi.list({ year, month, limit: PAGE_SIZE, offset, categoryId: categoryFilter?.categoryId }),
       transactionsApi.summary(year, month),
     ])
       .then(([page, sum]) => {
@@ -133,7 +136,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [year, month, offset, refreshKey, hydrated])
+  }, [year, month, offset, categoryFilter, refreshKey, hydrated])
 
   /** Re-fetch the current page and summary after a mutation. */
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
@@ -143,7 +146,14 @@ export default function DashboardPage() {
     setYear(y)
     setMonth(m)
     setOffset(0) // a new month starts at its first page
+    setCategoryFilter(null) // the slice it came from belongs to the old month's chart
     localStorage.setItem('dashboard_month', JSON.stringify({ year: y, month: m }))
+  }, [])
+
+  // ── Category filter ─────────────────────────────────────────────────────
+  const handleCategoryFilter = useCallback((filter: CategoryFilter | null) => {
+    setCategoryFilter(filter)
+    setOffset(0) // the filtered list has its own pages
   }, [])
 
   // ── Upload ──────────────────────────────────────────────────────────────
@@ -175,6 +185,8 @@ export default function DashboardPage() {
         // the income/שונות fallback rules and may return a different category
         // than the one requested.
         setTransactions((prev) => prev.map((t) => (t.id === txnId ? updated : t)))
+        // A recategorized row may no longer match the active filter.
+        if (categoryFilter && updated.category_id !== categoryFilter.categoryId) refresh()
         // The pie chart is a server-side aggregate, so it has to be refetched.
         const sum = await transactionsApi.summary(year, month)
         setSummary(sum)
@@ -183,7 +195,7 @@ export default function DashboardPage() {
         refresh() // resync — local state may no longer match the server
       }
     },
-    [year, month, refresh],
+    [year, month, categoryFilter, refresh],
   )
 
   // ── Delete ──────────────────────────────────────────────────────────────
@@ -288,11 +300,28 @@ export default function DashboardPage() {
         byCategory={summary.by_category}
         incomeTotal={summary.income_total}
         loading={loadingSummary}
+        activeFilter={categoryFilter}
+        onSelectCategory={handleCategoryFilter}
       />
 
       {/* ── Transactions table ─────────────────────────────── */}
       <div>
-        <h2 className="text-base font-semibold text-gray-700 mb-3">עסקאות</h2>
+        <div className="flex items-center gap-3 mb-3">
+          <h2 className="text-base font-semibold text-gray-700">עסקאות</h2>
+          {categoryFilter && (
+            <span className="flex items-center gap-1.5 bg-primary-50 text-primary-700 border border-primary-100 rounded-full ps-3 pe-1.5 py-0.5 text-xs font-medium">
+              {categoryFilter.name}
+              <button
+                onClick={() => handleCategoryFilter(null)}
+                aria-label="נקה סינון"
+                title="נקה סינון"
+                className="rounded-full w-5 h-5 flex items-center justify-center text-primary-400 hover:text-primary-700 hover:bg-primary-100 transition-colors"
+              >
+                ✕
+              </button>
+            </span>
+          )}
+        </div>
         <TransactionsTable
           transactions={transactions}
           categories={categories}
@@ -302,6 +331,7 @@ export default function DashboardPage() {
           onCategoryChange={handleCategoryChange}
           onEdit={(txn) => setModal({ txn })}
           onDelete={handleDelete}
+          filtered={categoryFilter !== null}
         />
       </div>
 

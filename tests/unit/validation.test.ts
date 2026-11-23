@@ -15,6 +15,7 @@ import {
   parseRouteId,
   validateAmount,
   validateBusinessName,
+  validateCategoryFilter,
   validateCategoryName,
   validateDateOnly,
   validateEmail,
@@ -286,6 +287,25 @@ describe('validateYearMonth', () => {
     ['both missing', null, null],
   ])('rejects %s', (_label, year, month) => {
     expect(validateYearMonth(year, month).ok).toBe(false)
+  })
+})
+
+describe('validateCategoryFilter', () => {
+  it('means "no filter" when absent or empty', () => {
+    expect(validateCategoryFilter(null)).toEqual({ ok: true, value: undefined })
+    expect(validateCategoryFilter('')).toEqual({ ok: true, value: undefined })
+  })
+
+  it('maps "none" to null, selecting uncategorized rows', () => {
+    expect(validateCategoryFilter('none')).toEqual({ ok: true, value: null })
+  })
+
+  it('accepts a positive integer id', () => {
+    expect(validateCategoryFilter('7')).toEqual({ ok: true, value: 7 })
+  })
+
+  it.each(['0', '-1', '1.5', 'abc', ' 7'])('rejects %j', (input) => {
+    expect(validateCategoryFilter(input).ok).toBe(false)
   })
 })
 

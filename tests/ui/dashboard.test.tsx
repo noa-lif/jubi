@@ -5,9 +5,21 @@
  * non-chart states.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ExpensePieChart from '@/components/dashboard/ExpensePieChart'
+
+// ResponsiveContainer measures its parent, which is 0×0 in jsdom, so no
+// sectors would render. Swap it for a fixed-size chart.
+vi.mock('recharts', async (importOriginal) => {
+  const recharts = await importOriginal<typeof import('recharts')>()
+  const { cloneElement } = await import('react')
+  return {
+    ...recharts,
+    ResponsiveContainer: ({ children }: { children: React.ReactElement<{ width?: number; height?: number }> }) =>
+      cloneElement(children, { width: 400, height: 260 }),
+  }
+})
 import TransactionModal from '@/components/dashboard/TransactionModal'
 import TransactionsTable from '@/components/dashboard/TransactionsTable'
 import type { CategoryResponse, TransactionResponse } from '@/types/api'
@@ -69,6 +81,12 @@ describe('TransactionsTable', () => {
   it('shows an empty state when there are no transactions', () => {
     renderTable({ transactions: [], page: { ...onePage, total: 0 } })
     expect(screen.getByText('לא הוספת עוד אף עסקה')).toBeInTheDocument()
+  })
+
+  it('says the category is empty, rather than offering an upload, when filtered', () => {
+    renderTable({ transactions: [], page: { ...onePage, total: 0 }, filtered: true })
+    expect(screen.getByText('אין עסקאות בקטגוריה זו')).toBeInTheDocument()
+    expect(screen.queryByText('לא הוספת עוד אף עסקה')).not.toBeInTheDocument()
   })
 
   it('shows skeleton rows while loading instead of the empty state', () => {
@@ -296,6 +314,56 @@ describe('ExpensePieChart', () => {
 
     rerender(<ExpensePieChart byCategory={[]} incomeTotal={9000} />)
     expect(screen.getByText('הכנסות החודש')).toBeInTheDocument()
+  })
+
+  describe('category filter', () => {
+    const BREAKDOWN = [
+      { category_id: 3, category_name: 'מזון', total: 300 },
+      { category_id: null, category_name: null, total: 100 },
+    ]
+
+    /** The clickable path of each slice, once the entry animation has drawn them all. */
+    async function slicePaths(container: HTMLElement) {
+      let paths: Element[] = []
+      await waitFor(() => {
+        paths = [...container.querySelectorAll('.recharts-pie-sector path')]
+        expect(paths).toHaveLength(BREAKDOWN.length)
+      }, { timeout: 3000 }) // recharts' default pie animation runs ~1.5s
+      return paths
+    }
+
+    it('selects a category when its slice is clicked', async () => {
+      const user = userEvent.setup()
+      const onSelectCategory = vi.fn()
+      const { container } = render(<ExpensePieChart byCategory={BREAKDOWN} onSelectCategory={onSelectCategory} />)
+
+      await user.click((await slicePaths(container))[0])
+      expect(onSelectCategory).toHaveBeenCalledWith({ categoryId: 3, name: 'מזון' })
+    })
+
+    it('selects the uncategorized slice as a null category id', async () => {
+      const user = userEvent.setup()
+      const onSelectCategory = vi.fn()
+      const { container } = render(<ExpensePieChart byCategory={BREAKDOWN} onSelectCategory={onSelectCategory} />)
+
+      await user.click((await slicePaths(container))[1])
+      expect(onSelectCategory).toHaveBeenCalledWith({ categoryId: null, name: 'שונות' })
+    })
+
+    it('clears the filter when the active slice is clicked again', async () => {
+      const user = userEvent.setup()
+      const onSelectCategory = vi.fn()
+      const { container } = render(
+        <ExpensePieChart
+          byCategory={BREAKDOWN}
+          activeFilter={{ categoryId: 3, name: 'מזון' }}
+          onSelectCategory={onSelectCategory}
+        />,
+      )
+
+      await user.click((await slicePaths(container))[0])
+      expect(onSelectCategory).toHaveBeenCalledWith(null)
+    })
   })
 
   it('treats a breakdown of only non-positive totals as empty', () => {

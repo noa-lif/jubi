@@ -162,6 +162,18 @@ export function validateYearMonth(
   return ok({ year, month })
 }
 
+/**
+ * Parses the optional `category_id` list filter: absent means no filter,
+ * `none` selects uncategorized rows (the chart's null-category slice), and
+ * anything else must be a positive integer id.
+ */
+export function validateCategoryFilter(raw: string | null): Validated<number | null | undefined> {
+  if (raw === null || raw === '') return ok(undefined)
+  if (raw === 'none') return ok(null)
+  const id = parseRouteId(raw)
+  return id === null ? fail('category_id must be a positive integer or "none"') : ok(id)
+}
+
 // Pagination defaults. The cap exists so a single request can't be used to
 // pull an unbounded number of rows out of the database.
 export const DEFAULT_PAGE_SIZE = 50

@@ -20,6 +20,8 @@ export interface ListTransactionsParams {
   month: number
   limit?: number
   offset?: number
+  /** Narrow to one category; `null` selects uncategorized rows. Omit for all. */
+  categoryId?: number | null
 }
 
 export const transactionsApi = {
@@ -27,12 +29,13 @@ export const transactionsApi = {
    * Fetch one page of transactions for the given month. The server caps
    * `limit`, so this can never pull an unbounded number of rows.
    */
-  list: ({ year, month, limit, offset }: ListTransactionsParams) =>
+  list: ({ year, month, limit, offset, categoryId }: ListTransactionsParams) =>
     apiClient.get<PaginatedResponse<TransactionResponse>>('/transactions', {
       year,
       month,
       limit,
       offset,
+      category_id: categoryId === null ? 'none' : categoryId,
     }),
 
   /** Monthly totals plus the per-category breakdown used by the pie chart. */

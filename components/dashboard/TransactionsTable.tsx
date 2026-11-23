@@ -60,6 +60,8 @@ interface TransactionsTableProps {
   onCategoryChange: (txnId: number, categoryId: number | null) => void
   onEdit: (txn: TransactionResponse) => void
   onDelete: (txnId: number) => void
+  /** True when a category filter is applied, so an empty list isn't presented as "no transactions at all". */
+  filtered?: boolean
 }
 
 export default function TransactionsTable({
@@ -71,6 +73,7 @@ export default function TransactionsTable({
   onCategoryChange,
   onEdit,
   onDelete,
+  filtered = false,
 }: TransactionsTableProps) {
   const expenseCategories = categories.filter((c) => c.name !== 'הכנסות')
 
@@ -118,8 +121,14 @@ export default function TransactionsTable({
                         d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
                       />
                     </svg>
-                    <span className="font-medium">לא הוספת עוד אף עסקה</span>
-                    <span className="text-xs">העלה קובץ עסקאות מהבנק</span>
+                    {filtered ? (
+                      <span className="font-medium">אין עסקאות בקטגוריה זו</span>
+                    ) : (
+                      <>
+                        <span className="font-medium">לא הוספת עוד אף עסקה</span>
+                        <span className="text-xs">העלה קובץ עסקאות מהבנק</span>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>

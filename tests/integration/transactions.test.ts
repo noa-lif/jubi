@@ -389,12 +389,45 @@ describeDb('transactions', () => {
       ['month 13', { year: 2026, month: 13 }],
       ['month 0', { year: 2026, month: 0 }],
       ['non-numeric month', { year: 2026, month: 'march' }],
+      ['non-numeric category_id', { year: 2026, month: 3, category_id: 'food' }],
+      ['zero category_id', { year: 2026, month: 3, category_id: 0 }],
     ])('rejects %s with 422', async (_label, params) => {
       expect((await list(params)).status).toBe(422)
     })
 
     it('requires year and month', async () => {
       expect((await list({})).status).toBe(422)
+    })
+
+    describe('category_id filter', () => {
+      it('returns only that category, with the total counting just the matches', async () => {
+        await seedTransaction(user, { business_name: 'Misc A' })
+        await seedTransaction(user, { business_name: 'Misc B' })
+        await seedTransaction(user, { amount: -500, business_name: 'Salary', category_id: user.hachnasotId })
+
+        const body = await (await list({ year: 2026, month: 3, category_id: user.shonotId })).json()
+        const names = body.items.map((t: { business_name: string }) => t.business_name).sort()
+
+        expect(names).toEqual(['Misc A', 'Misc B'])
+        expect(body.total).toBe(2)
+      })
+
+      it('selects uncategorized rows with "none"', async () => {
+        await seedTransaction(user, { business_name: 'Categorized' })
+        await seedTransaction(user, { business_name: 'Loose', category_id: null })
+
+        const body = await (await list({ year: 2026, month: 3, category_id: 'none' })).json()
+        expect(body.items.map((t: { business_name: string }) => t.business_name)).toEqual(['Loose'])
+      })
+
+      it("matches nothing for another user's category", async () => {
+        const other = await createTestUser()
+        await seedTransaction(user)
+
+        const body = await (await list({ year: 2026, month: 3, category_id: other.shonotId })).json()
+        expect(body.items).toEqual([])
+        expect(body.total).toBe(0)
+      })
     })
   })
 

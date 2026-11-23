@@ -8,6 +8,9 @@
  * the client only ever holds one page and summing it locally would chart a
  * fraction of the month. Aggregating in Postgres also means a month with
  * thousands of transactions still transfers only a handful of rows.
+ *
+ * Clicking a slice selects that category as the transactions-table filter;
+ * clicking the selected slice again clears it.
  */
 import { useMemo } from 'react'
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
@@ -26,8 +29,15 @@ const ILS = new Intl.NumberFormat('en-US', {
 })
 
 interface Slice {
+  categoryId: number | null
   name: string
   value: number
+}
+
+/** A category picked from the chart. `categoryId` is null for the uncategorized slice. */
+export interface CategoryFilter {
+  categoryId: number | null
+  name: string
 }
 
 function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: Slice }> }) {
@@ -55,12 +65,17 @@ interface ExpensePieChartProps {
   byCategory?: CategoryBreakdown[]
   incomeTotal?: number
   loading?: boolean
+  /** The slice currently filtering the table, if any; the others are dimmed. */
+  activeFilter?: CategoryFilter | null
+  onSelectCategory?: (filter: CategoryFilter | null) => void
 }
 
 export default function ExpensePieChart({
   byCategory = [],
   incomeTotal = 0,
   loading = false,
+  activeFilter = null,
+  onSelectCategory,
 }: ExpensePieChartProps) {
   // The server already filters to expenses, rounds, and sorts by total
   // descending; this only maps to the shape recharts wants and drops any
@@ -69,9 +84,16 @@ export default function ExpensePieChart({
     () =>
       byCategory
         .filter((c) => c.total > 0)
-        .map((c) => ({ name: c.category_name ?? 'שונות', value: c.total })),
+        .map((c) => ({ categoryId: c.category_id, name: c.category_name ?? 'שונות', value: c.total })),
     [byCategory],
   )
+
+  const handleSliceClick = (_: unknown, index: number) => {
+    const slice = slices[index]
+    if (!slice || !onSelectCategory) return
+    const isActive = activeFilter !== null && activeFilter.categoryId === slice.categoryId
+    onSelectCategory(isActive ? null : { categoryId: slice.categoryId, name: slice.name })
+  }
 
   return (
     <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
@@ -87,9 +109,23 @@ export default function ExpensePieChart({
       ) : (
         <ResponsiveContainer width="100%" height={260}>
           <PieChart>
-            <Pie data={slices} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value">
-              {slices.map((_, i) => (
-                <Cell key={i} fill={COLORS[i % COLORS.length]} />
+            <Pie
+              data={slices}
+              cx="50%"
+              cy="50%"
+              innerRadius={60}
+              outerRadius={100}
+              paddingAngle={2}
+              dataKey="value"
+              onClick={handleSliceClick}
+            >
+              {slices.map((slice, i) => (
+                <Cell
+                  key={i}
+                  fill={COLORS[i % COLORS.length]}
+                  fillOpacity={activeFilter && activeFilter.categoryId !== slice.categoryId ? 0.25 : 1}
+                  style={{ cursor: onSelectCategory ? 'pointer' : undefined, outline: 'none' }}
+                />
               ))}
             </Pie>
             <Tooltip content={<CustomTooltip />} isAnimationActive={false} />

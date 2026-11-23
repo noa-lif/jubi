@@ -1,5 +1,6 @@
 /**
- * GET  /api/transactions — list the current user's transactions for a month, paginated.
+ * GET  /api/transactions — list the current user's transactions for a month, paginated,
+ *                          optionally narrowed to one category (`category_id`, or `none`).
  * POST /api/transactions — create a new transaction.
  */
 import { NextResponse } from 'next/server'
@@ -10,6 +11,7 @@ import { ApiError } from '@/lib/errors'
 import {
   validateAmount,
   validateBusinessName,
+  validateCategoryFilter,
   validateDateOnly,
   validateOptionalId,
   validatePagination,
@@ -29,8 +31,17 @@ export async function GET(request: Request): Promise<NextResponse> {
   const page = validatePagination(url.searchParams.get('limit'), url.searchParams.get('offset'))
   if (!page.ok) return NextResponse.json({ detail: page.error }, { status: 422 })
 
+  const category = validateCategoryFilter(url.searchParams.get('category_id'))
+  if (!category.ok) return NextResponse.json({ detail: category.error }, { status: 422 })
+
   const { start, end } = monthRange(ym.value.year, ym.value.month)
-  const where = { user_id: user.id, date: { gte: start, lt: end } }
+  // `user_id` keeps the filter scoped to the caller, so naming another
+  // user's category id just matches nothing rather than leaking rows.
+  const where = {
+    user_id: user.id,
+    date: { gte: start, lt: end },
+    ...(category.value !== undefined && { category_id: category.value }),
+  }
 
   // One round trip for both the page and the count. The count is what lets the
   // client render "showing 50 of 812" and decide whether to offer a next page.
